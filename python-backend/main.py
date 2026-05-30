@@ -10,6 +10,7 @@ from collections import defaultdict
 import numpy as np
 import cv2
 from PIL import Image, ImageDraw, ImageFont
+from pilmoji import Pilmoji
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -136,36 +137,21 @@ def draw_boxes_stable(image_pil: Image.Image, boxes, labels) -> Image.Image:
     """
     Draw bounding boxes with:
     - Stable colour per class (indexed into CLASS_COLORS, not random).
-    - Emoji icon label in a colored pill above the box.
+    - Emoji icon label in a colored pill above the box (rendered via Pilmoji).
     - Confidence percentage shown in a small pill below the emoji.
     """
     image = image_pil.copy()
     iw, ih = image.size
     thickness = max(3, (iw + ih) // 250)
-    emoji_size = max(24, int(ih * 0.060))   # big emoji — 6% of image height
-    conf_size  = max(14, int(ih * 0.030))   # smaller confidence text
+    emoji_size = max(24, int(ih * 0.060))
+    conf_size = max(14, int(ih * 0.030))
     pad = 6
     stroke_w = 2
-    gap = 4   # gap between emoji pill and confidence pill
+    gap = 4
 
-    # Try fonts that support emojis and have bold weights
-    font_emoji = None
-    font_conf  = None
-    for font_path in (
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    ):
-        try:
-            font_emoji = ImageFont.truetype(font_path, emoji_size)
-            font_conf  = ImageFont.truetype(font_path, conf_size)
-            break
-        except Exception:
-            pass
-    if font_emoji is None:
-        font_emoji = ImageFont.load_default()
-        font_conf  = ImageFont.load_default()
+    # Load base font for measurement (Pilmoji will inject emoji glyphs)
+    base_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", emoji_size)
+    conf_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", conf_size)
 
     draw = ImageDraw.Draw(image)
 
@@ -177,9 +163,9 @@ def draw_boxes_stable(image_pil: Image.Image, boxes, labels) -> Image.Image:
         emoji_text = OBJECT_EMOJIS.get(label_name, "🔍")
         conf_text = f"{int(score * 100)}%"
 
-        left   = max(0, int(box.xmin))
-        top    = max(0, int(box.ymin))
-        right  = min(iw, int(box.xmax))
+        left = max(0, int(box.xmin))
+        top = max(0, int(box.ymin))
+        right = min(iw, int(box.xmax))
         bottom = min(ih, int(box.ymax))
 
         if right <= left or bottom <= top:
@@ -192,42 +178,40 @@ def draw_boxes_stable(image_pil: Image.Image, boxes, labels) -> Image.Image:
                 outline=color_rgb,
             )
 
-        # Measure emoji pill
-        bbox_emoji = draw.textbbox((0, 0), emoji_text, font=font_emoji)
+        # Measure emoji text
+        bbox_emoji = draw.textbbox((0, 0), emoji_text, font=base_font)
         ew = bbox_emoji[2] - bbox_emoji[0]
         eh = bbox_emoji[3] - bbox_emoji[1]
 
-        # Measure confidence pill
-        bbox_conf = draw.textbbox((0, 0), conf_text, font=font_conf)
+        # Measure confidence text
+        bbox_conf = draw.textbbox((0, 0), conf_text, font=conf_font)
         cw = bbox_conf[2] - bbox_conf[0]
         ch = bbox_conf[3] - bbox_conf[1]
 
-        # Total height of the stacked labels
         label_h = eh + pad * 2 + gap + ch + pad * 2
 
         pill_top = top - label_h - thickness
-        pill_bottom = top - thickness
         pill_left = left - thickness
 
         # Keep labels inside frame
         if pill_top < 0:
             pill_top = bottom + thickness
-            pill_bottom = bottom + thickness + label_h
 
         # Emoji pill background
         emoji_right = pill_left + ew + pad * 2
         emoji_bottom = pill_top + eh + pad * 2
         draw.rectangle([pill_left, pill_top, emoji_right, emoji_bottom], fill=color_rgb)
 
-        # Draw emoji in emoji pill
-        draw.text(
-            (pill_left + pad, pill_top + pad),
-            emoji_text,
-            fill=(255, 255, 255),
-            font=font_emoji,
-        )
+        # Draw emoji via Pilmoji so it renders correctly
+        with Pilmoji(image, draw=draw, default_text_font=base_font) as pilmoji:
+            pilmoji.text(
+                (pill_left + pad, pill_top + pad),
+                emoji_text,
+                font=base_font,
+                fill=(255, 255, 255),
+            )
 
-        # Confidence pill background (smaller, below emoji)
+        # Confidence pill background
         conf_top = emoji_bottom + gap
         conf_right = pill_left + cw + pad * 2
         conf_bottom = conf_top + ch + pad * 2
@@ -238,7 +222,7 @@ def draw_boxes_stable(image_pil: Image.Image, boxes, labels) -> Image.Image:
             (pill_left + pad, conf_top + pad),
             conf_text,
             fill=(255, 255, 255),
-            font=font_conf,
+            font=conf_font,
             stroke_width=stroke_w,
             stroke_fill=(0, 0, 0),
         )
