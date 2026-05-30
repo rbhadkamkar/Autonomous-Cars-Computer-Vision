@@ -90,11 +90,12 @@ async def detect_video(file: UploadFile = File(...)):
         tmp_in.write(content)
         input_path = tmp_in.name
 
+    raw_output_path = tempfile.mktemp(suffix=".avi")
     output_path = tempfile.mktemp(suffix=".mp4")
 
     try:
         model, labels, anchors = get_model()
-        from helpers import detect_image, draw_boxes, preprocess_input, decode_netout, do_nms
+        from helpers import draw_boxes, preprocess_input, decode_netout, do_nms
 
         cap = cv2.VideoCapture(input_path)
         if not cap.isOpened():
@@ -105,11 +106,13 @@ async def detect_video(file: UploadFile = File(...)):
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        # Write annotated frames to AVI (MJPG) — avoids codec compat issues on write
+        fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+        out = cv2.VideoWriter(raw_output_path, fourcc, fps, (width, height))
 
         detection_stats = defaultdict(lambda: {"count": 0, "total_conf": 0.0, "frames": set()})
         frame_idx = 0
+        last_boxes = []
         SAMPLE_EVERY = max(1, int(fps / 5))
 
         while True:
@@ -126,6 +129,7 @@ async def detect_video(file: UploadFile = File(...)):
                 yolo_outputs = model.predict(new_image, verbose=0)
                 boxes = decode_netout(yolo_outputs, 0.4, anchors, image_h, image_w, 416, 416)
                 boxes = do_nms(boxes, 0.45, 0.4)
+                last_boxes = boxes
 
                 for box in boxes:
                     label = labels[box.get_label()]
@@ -133,17 +137,44 @@ async def detect_video(file: UploadFile = File(...)):
                     detection_stats[label]["total_conf"] += float(box.get_score())
                     detection_stats[label]["frames"].add(frame_idx)
 
-                annotated_pil = draw_boxes(image_pil, boxes, labels)
+                annotated_pil = draw_boxes(image_pil, last_boxes, labels)
                 annotated_arr = np.array(annotated_pil)
                 annotated_bgr = cv2.cvtColor(annotated_arr, cv2.COLOR_RGB2BGR)
             else:
-                annotated_bgr = frame
+                # Re-use last detections on intermediate frames for smooth overlay
+                if last_boxes:
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    image_pil = Image.fromarray(frame_rgb)
+                    annotated_pil = draw_boxes(image_pil, last_boxes, labels)
+                    annotated_arr = np.array(annotated_pil)
+                    annotated_bgr = cv2.cvtColor(annotated_arr, cv2.COLOR_RGB2BGR)
+                else:
+                    annotated_bgr = frame
 
             out.write(annotated_bgr)
             frame_idx += 1
 
         cap.release()
         out.release()
+
+        # Re-encode to H.264 MP4 for browser compatibility
+        import subprocess
+        ffmpeg_result = subprocess.run([
+            "ffmpeg", "-y",
+            "-i", raw_output_path,
+            "-vcodec", "libx264",
+            "-preset", "fast",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            output_path
+        ], capture_output=True, text=True)
+        if ffmpeg_result.returncode != 0:
+            raise RuntimeError(f"ffmpeg failed: {ffmpeg_result.stderr}")
+        try:
+            os.unlink(raw_output_path)
+        except Exception:
+            pass
 
         formatted_stats = []
         for i, (label, stats) in enumerate(sorted(
