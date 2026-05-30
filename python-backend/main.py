@@ -3,13 +3,14 @@ import sys
 import json
 import tempfile
 import traceback
+import subprocess
 from pathlib import Path
 from collections import defaultdict
 
 import numpy as np
 import cv2
-from PIL import Image
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from PIL import Image, ImageDraw, ImageFont
+from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -33,13 +34,57 @@ def get_model():
     global _model, _labels, _anchors
     if _model is None:
         import tensorflow as tf
-        from helpers import detect_image
         _model = tf.keras.models.load_model(model_setup.paths["yolo_model.keras"])
         with open(model_setup.paths["labels.json"]) as f:
             _labels = json.load(f)
         with open(model_setup.paths["anchors.json"]) as f:
             _anchors = json.load(f)
     return _model, _labels, _anchors
+
+# Fixed color palette — one stable color per class index (mod 30).
+# Class index is permanent (from labels.json), so colors never change between frames.
+CLASS_COLORS = [
+    (0,   200, 255),   # 0  cyan-blue
+    (255,  80,  80),   # 1  red
+    (80,  255, 120),   # 2  green
+    (255, 200,   0),   # 3  amber
+    (180,  80, 255),   # 4  purple
+    (255, 140,   0),   # 5  orange
+    (0,   255, 200),   # 6  teal
+    (255,  80, 200),   # 7  pink
+    (120, 200, 255),   # 8  sky
+    (255, 255,  80),   # 9  yellow
+    (80,  180, 255),   # 10 light-blue
+    (200, 255,  80),   # 11 lime
+    (255, 120, 120),   # 12 salmon
+    (80,  255, 255),   # 13 aqua
+    (220, 160, 255),   # 14 lavender
+    (255, 180,  80),   # 15 gold
+    (80,  255, 160),   # 16 mint
+    (255,  80, 140),   # 17 rose
+    (160, 255,  80),   # 18 chartreuse
+    (80,  120, 255),   # 19 indigo
+    (255, 220, 120),   # 20 peach
+    (120, 255, 200),   # 21 seafoam
+    (200,  80, 255),   # 22 violet
+    (255, 160,  80),   # 23 tangerine
+    (80,  200, 200),   # 24 steel-teal
+    (255, 100, 160),   # 25 hot-pink
+    (100, 255, 120),   # 26 spring
+    (160, 200, 255),   # 27 periwinkle
+    (255, 200, 160),   # 28 apricot
+    (200, 255, 160),   # 29 pear
+]
+
+# Web hex versions of the same palette (for frontend cards)
+CLASS_COLORS_HEX = [
+    "#00C8FF", "#FF5050", "#50FF78", "#FFC800", "#B450FF",
+    "#FF8C00", "#00FFC8", "#FF50C8", "#78C8FF", "#FFFF50",
+    "#50B4FF", "#C8FF50", "#FF7878", "#50FFFF", "#DCA0FF",
+    "#FFB450", "#50FFA0", "#FF508C", "#A0FF50", "#5078FF",
+    "#FFDC78", "#78FFC8", "#C850FF", "#FFA050", "#50C8C8",
+    "#FF64A0", "#64FF78", "#A0C8FF", "#FFC8A0", "#C8FFA0",
+]
 
 OBJECT_EMOJIS = {
     "person": "🚶", "bicycle": "🚲", "car": "🚗", "motorbike": "🏍️",
@@ -69,20 +114,112 @@ OBJECT_DESCRIPTIONS = {
     "train": "Rail vehicle detected — crossing caution engaged",
 }
 
-LABEL_COLORS = [
-    "#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7",
-    "#DDA0DD", "#98D8C8", "#F7DC6F", "#BB8FCE", "#85C1E9",
-    "#82E0AA", "#F0B27A", "#AED6F1", "#A9DFBF", "#F9E79F",
-]
+
+def is_ego_vehicle(box, image_w: int, image_h: int) -> bool:
+    """
+    Filter out the ego vehicle (car housing the dashcam).
+    Its hood appears as a large box in the bottom-centre of the frame.
+    Reject any box whose bottom edge is in the lowest 20% of the frame
+    AND whose horizontal centre is within the middle 70% of the frame.
+    """
+    ymax_frac = box.ymax / image_h
+    center_x_frac = (box.xmin + box.xmax) / 2 / image_w
+    box_width_frac = (box.xmax - box.xmin) / image_w
+    return (
+        ymax_frac > 0.80
+        and 0.15 < center_x_frac < 0.85
+        and box_width_frac > 0.25   # must be wide to be the hood
+    )
+
+
+def draw_boxes_stable(image_pil: Image.Image, boxes, labels) -> Image.Image:
+    """
+    Draw bounding boxes with:
+    - Stable colour per class (indexed into CLASS_COLORS, not random).
+    - Coloured filled pill behind the label text for easy reading.
+    - White label text: "<class> <conf%>".
+    """
+    image = image_pil.copy()
+    iw, ih = image.size
+    thickness = max(2, (iw + ih) // 300)
+    font_size = max(14, int(ih * 0.022))
+
+    try:
+        font = ImageFont.truetype(
+            "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
+            font_size,
+        )
+    except Exception:
+        font = ImageFont.load_default()
+
+    draw = ImageDraw.Draw(image)
+
+    for box in boxes:
+        c = box.get_label()
+        color_rgb = CLASS_COLORS[c % len(CLASS_COLORS)]
+        score = box.get_score()
+        label_name = labels[c]
+        label_text = f"{label_name}  {int(score * 100)}%"
+
+        left   = max(0, int(box.xmin))
+        top    = max(0, int(box.ymin))
+        right  = min(iw, int(box.xmax))
+        bottom = min(ih, int(box.ymax))
+
+        if right <= left or bottom <= top:
+            continue
+
+        # Draw thick bounding box
+        for t in range(thickness):
+            draw.rectangle(
+                [left - t, top - t, right + t, bottom + t],
+                outline=color_rgb,
+            )
+
+        # Measure label pill size
+        bbox = draw.textbbox((0, 0), label_text, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+        pad = 4
+
+        pill_top = top - text_h - pad * 2 - thickness
+        pill_bottom = top - thickness
+        pill_left = left - thickness
+        pill_right = left - thickness + text_w + pad * 2
+
+        # Keep pill inside frame
+        if pill_top < 0:
+            pill_top = bottom + thickness
+            pill_bottom = bottom + thickness + text_h + pad * 2
+
+        # Filled pill background
+        draw.rectangle([pill_left, pill_top, pill_right, pill_bottom], fill=color_rgb)
+
+        # White label text
+        draw.text(
+            (pill_left + pad, pill_top + pad),
+            label_text,
+            fill=(255, 255, 255),
+            font=font,
+        )
+
+    return image
+
 
 @app.get("/inference/health")
 def health():
     return {"status": "ok"}
 
+
 @app.post("/inference/detect")
-async def detect_video(file: UploadFile = File(...)):
+async def detect_video(
+    file: UploadFile = File(...),
+    threshold: float = Form(0.4),
+):
     if not file.content_type or not file.content_type.startswith("video/"):
         raise HTTPException(status_code=400, detail="Only video files are accepted")
+
+    threshold = max(0.1, min(0.95, threshold))
 
     suffix = Path(file.filename or "video.mp4").suffix or ".mp4"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_in:
@@ -95,7 +232,7 @@ async def detect_video(file: UploadFile = File(...)):
 
     try:
         model, labels, anchors = get_model()
-        from helpers import draw_boxes, preprocess_input, decode_netout, do_nms
+        from helpers import preprocess_input, decode_netout, do_nms
 
         cap = cv2.VideoCapture(input_path)
         if not cap.isOpened():
@@ -104,15 +241,13 @@ async def detect_video(file: UploadFile = File(...)):
         fps = cap.get(cv2.CAP_PROP_FPS) or 25
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        # Write annotated frames to AVI (MJPG) — avoids codec compat issues on write
         fourcc = cv2.VideoWriter_fourcc(*"MJPG")
         out = cv2.VideoWriter(raw_output_path, fourcc, fps, (width, height))
 
         detection_stats = defaultdict(lambda: {"count": 0, "total_conf": 0.0, "frames": set()})
         frame_idx = 0
-        last_boxes = []
+        last_boxes: list = []
         SAMPLE_EVERY = max(1, int(fps / 5))
 
         while True:
@@ -123,12 +258,15 @@ async def detect_video(file: UploadFile = File(...)):
             if frame_idx % SAMPLE_EVERY == 0:
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 image_pil = Image.fromarray(frame_rgb)
-                image_w, image_h = image_pil.size
+                iw, ih = image_pil.size
 
                 new_image = preprocess_input(image_pil, 416, 416)
                 yolo_outputs = model.predict(new_image, verbose=0)
-                boxes = decode_netout(yolo_outputs, 0.4, anchors, image_h, image_w, 416, 416)
-                boxes = do_nms(boxes, 0.45, 0.4)
+                boxes = decode_netout(yolo_outputs, threshold, anchors, ih, iw, 416, 416)
+                boxes = do_nms(boxes, 0.45, threshold)
+
+                # Filter out ego vehicle (car housing the camera)
+                boxes = [b for b in boxes if not is_ego_vehicle(b, iw, ih)]
                 last_boxes = boxes
 
                 for box in boxes:
@@ -137,19 +275,14 @@ async def detect_video(file: UploadFile = File(...)):
                     detection_stats[label]["total_conf"] += float(box.get_score())
                     detection_stats[label]["frames"].add(frame_idx)
 
-                annotated_pil = draw_boxes(image_pil, last_boxes, labels)
-                annotated_arr = np.array(annotated_pil)
-                annotated_bgr = cv2.cvtColor(annotated_arr, cv2.COLOR_RGB2BGR)
+            # Always draw last known boxes on every frame
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            image_pil = Image.fromarray(frame_rgb)
+            if last_boxes:
+                annotated_pil = draw_boxes_stable(image_pil, last_boxes, labels)
             else:
-                # Re-use last detections on intermediate frames for smooth overlay
-                if last_boxes:
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    image_pil = Image.fromarray(frame_rgb)
-                    annotated_pil = draw_boxes(image_pil, last_boxes, labels)
-                    annotated_arr = np.array(annotated_pil)
-                    annotated_bgr = cv2.cvtColor(annotated_arr, cv2.COLOR_RGB2BGR)
-                else:
-                    annotated_bgr = frame
+                annotated_pil = image_pil
+            annotated_bgr = cv2.cvtColor(np.array(annotated_pil), cv2.COLOR_RGB2BGR)
 
             out.write(annotated_bgr)
             frame_idx += 1
@@ -157,8 +290,7 @@ async def detect_video(file: UploadFile = File(...)):
         cap.release()
         out.release()
 
-        # Re-encode to H.264 MP4 for browser compatibility
-        import subprocess
+        # Re-encode to H.264 for browser playback
         ffmpeg_result = subprocess.run([
             "ffmpeg", "-y",
             "-i", raw_output_path,
@@ -167,7 +299,7 @@ async def detect_video(file: UploadFile = File(...)):
             "-crf", "23",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
-            output_path
+            output_path,
         ], capture_output=True, text=True)
         if ffmpeg_result.returncode != 0:
             raise RuntimeError(f"ffmpeg failed: {ffmpeg_result.stderr}")
@@ -176,23 +308,26 @@ async def detect_video(file: UploadFile = File(...)):
         except Exception:
             pass
 
+        # Build per-class stats, colour keyed by class index (stable)
+        all_labels = labels  # full list from labels.json
         formatted_stats = []
-        for i, (label, stats) in enumerate(sorted(
+        for label, stats in sorted(
             detection_stats.items(),
             key=lambda x: x[1]["count"],
-            reverse=True
-        )):
+            reverse=True,
+        ):
             count = stats["count"]
             avg_conf = stats["total_conf"] / count if count > 0 else 0
+            class_idx = all_labels.index(label) if label in all_labels else 0
             formatted_stats.append({
                 "label": label,
                 "count": count,
                 "avg_confidence": round(avg_conf, 3),
-                "color": LABEL_COLORS[i % len(LABEL_COLORS)],
+                "color": CLASS_COLORS_HEX[class_idx % len(CLASS_COLORS_HEX)],
                 "emoji": OBJECT_EMOJIS.get(label, "🔍"),
                 "description": OBJECT_DESCRIPTIONS.get(
                     label,
-                    f"{label.capitalize()} object detected in scene"
+                    f"{label.capitalize()} object detected in scene",
                 ),
                 "frame_appearances": len(stats["frames"]),
             })
@@ -221,7 +356,9 @@ async def detect_video(file: UploadFile = File(...)):
         except Exception:
             pass
 
+
 _output_registry: dict[str, str] = {}
+
 
 @app.get("/inference/video/{result_id}")
 def get_video(result_id: str):
@@ -231,6 +368,7 @@ def get_video(result_id: str):
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Video file expired or missing")
     return FileResponse(path, media_type="video/mp4", filename="detected.mp4")
+
 
 if __name__ == "__main__":
     import uvicorn

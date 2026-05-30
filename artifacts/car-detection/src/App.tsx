@@ -9,43 +9,26 @@ import { useToast } from "@/hooks/use-toast";
 
 function Home() {
   const [isDetecting, setIsDetecting] = useState(false);
-  const [result, setResult] = useState<DetectionResult | null>(null);
+  const [result, setResult]           = useState<DetectionResult | null>(null);
   const { toast } = useToast();
 
-  const handleDetect = async (file: File) => {
+  const handleDetect = async (file: File, threshold: number) => {
     setIsDetecting(true);
     setResult(null);
     try {
       const form = new FormData();
       form.append("file", file);
+      form.append("threshold", String(threshold));
       const res = await fetch("/inference/detect", { method: "POST", body: form });
       if (!res.ok) {
-        throw new Error("Detection failed");
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as { detail?: string }).detail || "Detection failed");
       }
       const data = await res.json();
       setResult(data);
-    } catch (e) {
-      toast({
-        title: "Detection Failed",
-        description: "An error occurred while processing the video.",
-        variant: "destructive",
-      });
-      // Fallback dummy data for demo purposes since we don't have a real backend 
-      // responding currently in this environment for real files easily
-      setResult({
-        result_id: "demo-id",
-        total_frames: 120,
-        fps: 24.5,
-        resolution: { width: 1280, height: 720 },
-        total_detections: 450,
-        unique_classes: 4,
-        detections: [
-          { label: "car", count: 210, avg_confidence: 0.92, color: "#00ffff", emoji: "🚗", description: "Standard vehicles", frame_appearances: 120 },
-          { label: "person", count: 180, avg_confidence: 0.85, color: "#ff00ff", emoji: "🚶", description: "Pedestrians", frame_appearances: 90 },
-          { label: "bus", count: 40, avg_confidence: 0.88, color: "#ffff00", emoji: "🚌", description: "Public transport", frame_appearances: 30 },
-          { label: "traffic light", count: 20, avg_confidence: 0.95, color: "#00ff00", emoji: "🚥", description: "Traffic signals", frame_appearances: 60 }
-        ]
-      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "An error occurred while processing the video.";
+      toast({ title: "Detection Failed", description: msg, variant: "destructive" });
     } finally {
       setIsDetecting(false);
     }
@@ -54,7 +37,7 @@ function Home() {
   return (
     <div className="min-h-screen w-full flex flex-col bg-background text-foreground relative overflow-hidden font-sans">
       <div className="scanline" />
-      
+
       {/* Hero */}
       <section className="w-full pt-24 pb-12 px-4 text-center relative z-10">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(0,255,255,0.1),transparent_50%)] pointer-events-none" />
@@ -86,9 +69,10 @@ function Home() {
           <div className="w-full">
             <ResultsView data={result} />
             <div className="w-full max-w-6xl mx-auto px-4 mt-8 flex justify-center">
-              <button 
+              <button
                 onClick={() => setResult(null)}
                 className="px-6 py-2 border border-primary/50 text-primary hover:bg-primary/10 rounded-md transition-colors font-mono text-sm tracking-widest uppercase"
+                data-testid="button-process-another"
               >
                 Process Another Feed
               </button>
@@ -100,9 +84,13 @@ function Home() {
 
         {!isDetecting && !result && (
           <div className="w-full space-y-8 opacity-80 hover:opacity-100 transition-opacity duration-500">
-            <div className="max-w-6xl mx-auto px-4"><div className="h-px w-full bg-gradient-to-r from-transparent via-border/50 to-transparent my-12" /></div>
+            <div className="max-w-6xl mx-auto px-4">
+              <div className="h-px w-full bg-gradient-to-r from-transparent via-border/50 to-transparent my-12" />
+            </div>
             <HowItWorks />
-            <div className="max-w-4xl mx-auto px-4"><div className="h-px w-full bg-gradient-to-r from-transparent via-border/50 to-transparent my-12" /></div>
+            <div className="max-w-4xl mx-auto px-4">
+              <div className="h-px w-full bg-gradient-to-r from-transparent via-border/50 to-transparent my-12" />
+            </div>
             <FunFacts />
           </div>
         )}
