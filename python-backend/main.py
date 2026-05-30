@@ -137,12 +137,14 @@ def draw_boxes_stable(image_pil: Image.Image, boxes, labels) -> Image.Image:
     Draw bounding boxes with:
     - Stable colour per class (indexed into CLASS_COLORS, not random).
     - Coloured filled pill behind the label text for easy reading.
-    - White label text: "<class> <conf%>".
+    - White label text with a dark stroke for maximum readability.
     """
     image = image_pil.copy()
     iw, ih = image.size
-    thickness = max(2, (iw + ih) // 300)
-    font_size = max(14, int(ih * 0.022))
+    thickness = max(3, (iw + ih) // 250)
+    font_size = max(18, int(ih * 0.040))  # 4% of image height — very readable
+    pad = 6
+    stroke_w = 2
 
     try:
         font = ImageFont.truetype(
@@ -180,7 +182,6 @@ def draw_boxes_stable(image_pil: Image.Image, boxes, labels) -> Image.Image:
         bbox = draw.textbbox((0, 0), label_text, font=font)
         text_w = bbox[2] - bbox[0]
         text_h = bbox[3] - bbox[1]
-        pad = 4
 
         pill_top = top - text_h - pad * 2 - thickness
         pill_bottom = top - thickness
@@ -195,12 +196,14 @@ def draw_boxes_stable(image_pil: Image.Image, boxes, labels) -> Image.Image:
         # Filled pill background
         draw.rectangle([pill_left, pill_top, pill_right, pill_bottom], fill=color_rgb)
 
-        # White label text
+        # White label text with dark stroke for readability on any background
         draw.text(
             (pill_left + pad, pill_top + pad),
             label_text,
             fill=(255, 255, 255),
             font=font,
+            stroke_width=stroke_w,
+            stroke_fill=(0, 0, 0),
         )
 
     return image
