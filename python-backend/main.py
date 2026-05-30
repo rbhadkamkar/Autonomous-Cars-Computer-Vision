@@ -136,23 +136,36 @@ def draw_boxes_stable(image_pil: Image.Image, boxes, labels) -> Image.Image:
     """
     Draw bounding boxes with:
     - Stable colour per class (indexed into CLASS_COLORS, not random).
-    - Coloured filled pill behind the label text for easy reading.
-    - White label text with a dark stroke for maximum readability.
+    - Emoji icon label in a colored pill above the box.
+    - Confidence percentage shown in a small pill below the emoji.
     """
     image = image_pil.copy()
     iw, ih = image.size
     thickness = max(3, (iw + ih) // 250)
-    font_size = max(18, int(ih * 0.040))  # 4% of image height — very readable
+    emoji_size = max(24, int(ih * 0.060))   # big emoji — 6% of image height
+    conf_size  = max(14, int(ih * 0.030))   # smaller confidence text
     pad = 6
     stroke_w = 2
+    gap = 4   # gap between emoji pill and confidence pill
 
-    try:
-        font = ImageFont.truetype(
-            "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
-            font_size,
-        )
-    except Exception:
-        font = ImageFont.load_default()
+    # Try fonts that support emojis and have bold weights
+    font_emoji = None
+    font_conf  = None
+    for font_path in (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    ):
+        try:
+            font_emoji = ImageFont.truetype(font_path, emoji_size)
+            font_conf  = ImageFont.truetype(font_path, conf_size)
+            break
+        except Exception:
+            pass
+    if font_emoji is None:
+        font_emoji = ImageFont.load_default()
+        font_conf  = ImageFont.load_default()
 
     draw = ImageDraw.Draw(image)
 
@@ -161,7 +174,8 @@ def draw_boxes_stable(image_pil: Image.Image, boxes, labels) -> Image.Image:
         color_rgb = CLASS_COLORS[c % len(CLASS_COLORS)]
         score = box.get_score()
         label_name = labels[c]
-        label_text = f"{label_name}  {int(score * 100)}%"
+        emoji_text = OBJECT_EMOJIS.get(label_name, "🔍")
+        conf_text = f"{int(score * 100)}%"
 
         left   = max(0, int(box.xmin))
         top    = max(0, int(box.ymin))
@@ -178,30 +192,53 @@ def draw_boxes_stable(image_pil: Image.Image, boxes, labels) -> Image.Image:
                 outline=color_rgb,
             )
 
-        # Measure label pill size
-        bbox = draw.textbbox((0, 0), label_text, font=font)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
+        # Measure emoji pill
+        bbox_emoji = draw.textbbox((0, 0), emoji_text, font=font_emoji)
+        ew = bbox_emoji[2] - bbox_emoji[0]
+        eh = bbox_emoji[3] - bbox_emoji[1]
 
-        pill_top = top - text_h - pad * 2 - thickness
+        # Measure confidence pill
+        bbox_conf = draw.textbbox((0, 0), conf_text, font=font_conf)
+        cw = bbox_conf[2] - bbox_conf[0]
+        ch = bbox_conf[3] - bbox_conf[1]
+
+        # Total height of the stacked labels
+        label_h = eh + pad * 2 + gap + ch + pad * 2
+
+        pill_top = top - label_h - thickness
         pill_bottom = top - thickness
         pill_left = left - thickness
-        pill_right = left - thickness + text_w + pad * 2
 
-        # Keep pill inside frame
+        # Keep labels inside frame
         if pill_top < 0:
             pill_top = bottom + thickness
-            pill_bottom = bottom + thickness + text_h + pad * 2
+            pill_bottom = bottom + thickness + label_h
 
-        # Filled pill background
-        draw.rectangle([pill_left, pill_top, pill_right, pill_bottom], fill=color_rgb)
+        # Emoji pill background
+        emoji_right = pill_left + ew + pad * 2
+        emoji_bottom = pill_top + eh + pad * 2
+        draw.rectangle([pill_left, pill_top, emoji_right, emoji_bottom], fill=color_rgb)
 
-        # White label text with dark stroke for readability on any background
+        # Draw emoji in emoji pill
         draw.text(
             (pill_left + pad, pill_top + pad),
-            label_text,
+            emoji_text,
             fill=(255, 255, 255),
-            font=font,
+            font=font_emoji,
+        )
+
+        # Confidence pill background (smaller, below emoji)
+        conf_top = emoji_bottom + gap
+        conf_right = pill_left + cw + pad * 2
+        conf_bottom = conf_top + ch + pad * 2
+        draw.rectangle([pill_left, conf_top, conf_right, conf_bottom], fill=color_rgb)
+
+        # Draw confidence percentage with dark stroke
+        draw.text(
+            (pill_left + pad, conf_top + pad),
+            conf_text,
+            fill=(255, 255, 255),
+            font=font_conf,
             stroke_width=stroke_w,
             stroke_fill=(0, 0, 0),
         )
