@@ -69,7 +69,7 @@ export default defineConfig({
       strict: true,
     },
     proxy: {
-      "/api": {
+      "/inference": {
         target: `http://localhost:${pythonPort}`,
         changeOrigin: true,
       },

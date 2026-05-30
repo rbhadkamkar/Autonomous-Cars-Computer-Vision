@@ -22,7 +22,7 @@ export type DetectionResult = {
 };
 
 export function ResultsView({ data }: { data: DetectionResult }) {
-  const videoUrl = `/api/video/${data.result_id}`;
+  const videoUrl = `/inference/video/${data.result_id}`;
   const sortedDetections = [...data.detections].sort((a, b) => b.count - a.count);
 
   return (

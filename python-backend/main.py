@@ -75,11 +75,11 @@ LABEL_COLORS = [
     "#82E0AA", "#F0B27A", "#AED6F1", "#A9DFBF", "#F9E79F",
 ]
 
-@app.get("/api/health")
+@app.get("/inference/health")
 def health():
     return {"status": "ok"}
 
-@app.post("/api/detect")
+@app.post("/inference/detect")
 async def detect_video(file: UploadFile = File(...)):
     if not file.content_type or not file.content_type.startswith("video/"):
         raise HTTPException(status_code=400, detail="Only video files are accepted")
@@ -192,7 +192,7 @@ async def detect_video(file: UploadFile = File(...)):
 
 _output_registry: dict[str, str] = {}
 
-@app.get("/api/video/{result_id}")
+@app.get("/inference/video/{result_id}")
 def get_video(result_id: str):
     if result_id not in _output_registry:
         raise HTTPException(status_code=404, detail="Video not found")
