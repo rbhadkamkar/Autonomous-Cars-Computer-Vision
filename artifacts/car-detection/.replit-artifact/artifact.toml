@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Autonomous Car Object Detection"
+version = "1.0.0"
+id = "artifacts/car-detection"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 24194
+
+[services.development]
+run = "pnpm --filter @workspace/car-detection run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/car-detection", "run", "build" ]
+publicDir = "artifacts/car-detection/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24194"
+BASE_PATH = "/"
