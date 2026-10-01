@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { UploadCloud, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -17,6 +17,7 @@ interface Props {
 }
 
 export function UploadDemo({ onDetect }: Props) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive]   = useState(false);
   const [threshold, setThreshold]     = useState(40); // stored as 0–100
   const { toast } = useToast();
@@ -43,8 +44,9 @@ export function UploadDemo({ onDetect }: Props) {
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    e.preventDefault();
-    if (e.target.files?.[0]) submit(e.target.files[0]);
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (file) submit(file);
   };
 
   const triggerSample = (s: typeof SCENARIOS[0]) => {
@@ -73,9 +75,10 @@ export function UploadDemo({ onDetect }: Props) {
         data-testid="upload-zone"
       >
         <input
+          ref={fileInputRef}
           type="file"
-          accept="video/*"
-          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+          accept="video/*,.mp4,.mov,.webm,.avi,.mkv"
+          className="sr-only"
           onChange={handleChange}
           data-testid="input-video-upload"
         />
@@ -85,7 +88,12 @@ export function UploadDemo({ onDetect }: Props) {
           </div>
           <h3 className="text-xl font-semibold">Drag & Drop Dashcam Footage</h3>
           <p className="text-muted-foreground">MP4, MOV, or WebM • Max 100MB</p>
-          <Button variant="outline" className="pointer-events-auto z-10 border-primary/50 text-primary hover:bg-primary/20">
+          <Button
+            type="button"
+            variant="outline"
+            className="pointer-events-auto z-10 border-primary/50 text-primary hover:bg-primary/20"
+            onClick={() => fileInputRef.current?.click()}
+          >
             Select Video File
           </Button>
         </div>
